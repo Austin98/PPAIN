@@ -1,5 +1,7 @@
 # PPAIN: Privacy-Preserving Adaptive Inpainting Network
 
+> **Code will be released after paper acceptance.** Paper: [arXiv link pending]
+
 **[中文说明](#中文) | [English](#english)**
 
 ---
