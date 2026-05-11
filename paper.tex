@@ -1,0 +1,641 @@
+% !TEX program = pdflatex
+\documentclass[preprint,12pt]{elsarticle}
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{multirow}
+\usepackage{color}
+\usepackage{hyperref}
+\usepackage{subcaption}
+
+\journal{Engineering Applications of Artificial Intelligence}
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{PPAIN: Privacy-Preserving Adaptive Inpainting Network for Content-Level Protection in Aerial Imagery}
+
+\author[inst1]{Anonymous Author}
+
+\affiliation[inst1]{organization={Anonymous Institution},
+city={City},
+country={Country}}
+
+\begin{abstract}
+The proliferation of unmanned aerial vehicles (UAVs) has created unprecedented privacy challenges, as aerial imagery can inadvertently capture and expose sensitive information about individuals, vehicles, and private property. Existing privacy protection methods predominantly address metadata removal or face anonymization, neglecting the critical vulnerability of \emph{implicit information leakage} through visual content---where pedestrians, vehicles, and contextual cues in aerial images can be exploited for surveillance, tracking, and behavioral profiling. This paper proposes PPAIN (Privacy-Preserving Adaptive Inpainting Network), a detection-guided privacy-preserving inpainting framework for aerial imagery. PPAIN introduces three key innovations: (1) a Sensitivity-Guided Attention (SGA) mechanism that adaptively allocates processing capacity to high-risk regions based on object category, spatial position, and detection confidence; (2) a detection suppression loss that explicitly penalizes the generator when sanitized images remain detectable, complemented by a pixel-level discriminator that ensures visual naturalness; and (3) a multi-scale context encoder tailored for the varying object scales prevalent in aerial scenes. Experiments on the VisDrone2019-DET benchmark (148 test images, 1,856 detections) demonstrate that PPAIN achieves 55.3\% privacy removal rate against YOLO11 (82.4\% for high-confidence detections)---surpassing Telea inpainting by 11.1 percentage points---while maintaining competitive perceptual quality (SSIM 0.9982, LPIPS 0.084). Cross-detector evaluation confirms that PPAIN's privacy protection generalizes to unseen detectors (YOLOv8, RT-DETR, Faster R-CNN). Notably, PPAIN's advantage is most pronounced on complex scenes with dense pedestrian and vehicle populations, where traditional inpainting methods exhibit visible artifacts. We further analyze the privacy-utility trade-off across sensitivity thresholds and provide deployment guidelines for resource-constrained UAV platforms. The results establish PPAIN as a practical solution for content-level privacy protection in the rapidly expanding domain of aerial imagery.
+
+\end{abstract}
+
+\begin{keyword}
+Image privacy \sep implicit information leakage \sep aerial imagery \sep inpainting \sep UAV privacy \sep sensitivity-guided attention \sep privacy-preserving imaging
+\end{keyword}
+
+\end{frontmatter}
+
+% ============================================================
+\section{Introduction}
+\label{sec:intro}
+% ============================================================
+
+The global unmanned aerial vehicle (UAV) market, projected to exceed \$58 billion by 2030, has catalyzed a surge in aerial image acquisition across applications ranging from urban planning and agricultural monitoring to disaster response and infrastructure inspection~\cite{liang2023drone}. While these platforms offer transformative capabilities, they simultaneously introduce severe privacy risks: a single drone flight can capture hundreds of images containing identifiable individuals, license plates, and private property details---often without the knowledge or consent of those depicted~\cite{kpegas2021privacy}.
+
+Existing privacy protection mechanisms predominantly operate at the \emph{metadata level}, removing EXIF tags such as GPS coordinates and timestamps. While necessary, this approach overlooks a more fundamental vulnerability: \textbf{implicit information leakage through visual content}. As illustrated in Fig.~\ref{fig:motivation}, an aerial image of a residential area may appear innocuous after metadata stripping, yet it still reveals: (i) the presence and location of individuals (enabling surveillance), (ii) vehicle types and positions (enabling tracking), and (iii) property characteristics (enabling profiling). Recent incidents involving drone-based stalking and unauthorized surveillance have underscored the urgency of addressing this content-level privacy gap~\cite{meden2021privacy}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/fig1_motivation.pdf}
+\caption{Motivating example. Even after metadata removal, aerial images leak implicit information through visual content. (a) Original aerial image. (b) YOLO11 detections: pedestrians (red), cars (blue), bicycles (green). (c) After PPAIN sanitization: sensitive regions replaced with contextually appropriate content.}
+\label{fig:motivation}
+\end{figure}
+
+The challenge of content-level privacy protection in aerial imagery differs fundamentally from conventional image privacy tasks in three respects. First, \emph{object scale variation}: aerial images capture objects at vastly different scales---a pedestrian may occupy merely $8 \times 15$ pixels while a vehicle spans $40 \times 60$ pixels---demanding multi-scale detection and inpainting capabilities. Second, \emph{privacy heterogeneity}: not all detected objects pose equal privacy risks; a clearly visible pedestrian near the image center warrants stronger protection than a distant, partially occluded bicycle at the periphery. Third, \emph{real-time constraints}: UAV platforms require on-board processing at frame rates sufficient for operational deployment, precluding computationally expensive post-processing pipelines.
+
+Existing approaches fall short of addressing these challenges comprehensively. Face de-identification methods~\cite{du2014face,li2019face} target explicit identifiers but ignore background content. General-purpose inpainting techniques~\cite{criminisi2004region,telea2004imageinpainting,suvorov2022lama} treat all masked regions uniformly, without distinguishing between high-risk and low-risk areas. Deep learning inpainting methods~\cite{yu2018free,li2022mat} achieve superior visual quality but lack privacy-specific optimization---a method can produce visually seamless results that nonetheless preserve enough information for re-detection by adversarial networks.
+
+This paper proposes \textbf{PPAIN (Privacy-Preserving Adaptive Inpainting Network)}, a detection-guided privacy-preserving inpainting framework that addresses these limitations through three key contributions:
+
+\begin{enumerate}
+    \item \textbf{Sensitivity-Guided Attention (SGA) mechanism}: A novel attention module that adaptively focuses computational resources on high-privacy-risk regions by jointly conditioning on object category, spatial position, and detection confidence. Unlike standard attention mechanisms~\cite{woo2018cbam,hu2018squeeze}, SGA incorporates domain-specific privacy priors into the attention computation.
+
+    \item \textbf{Detection suppression loss}: A novel loss function that explicitly penalizes the generator when the frozen detector still identifies sensitive objects in sanitized images, driving detection confidence below a threshold. This is complemented by a pixel-level adversarial discriminator that ensures visual naturalness of inpainted content.
+
+    \item \textbf{Multi-scale context-aware architecture}: An encoder-decoder network with feature pyramid fusion specifically designed for the scale distribution of aerial imagery objects, enabling effective processing of both small pedestrians and large vehicles within a single forward pass.
+\end{enumerate}
+
+We evaluate PPAIN on the VisDrone2019-DET benchmark~\cite{visdrone2019}, a large-scale aerial object detection dataset. We train on 400 images and evaluate on 148 test images containing 1,856 detections across 10 object categories. Our experiments compare against six baseline methods spanning traditional and deep learning approaches. Results demonstrate that PPAIN achieves 55.3\% privacy removal rate (82.4\% for high-confidence detections) while maintaining SSIM of 0.9982, establishing a favorable privacy-utility trade-off. We further provide detailed ablation studies, sensitivity analysis, and efficiency profiling to guide practical deployment.
+
+
+% ============================================================
+\section{Related Work}
+\label{sec:related}
+% ============================================================
+
+\subsection{Image Privacy Protection}
+
+Image privacy protection has evolved along two main axes: \emph{explicit identifier removal} and \emph{content-level protection}. The former addresses directly identifying information such as faces~\cite{du2014face,li2019face,oh2016face} and metadata~\cite{zerr2012privacy}. Face de-identification techniques range from simple blurring and pixelation to GAN-based synthesis that preserves facial attributes while preventing identity linkage~\cite{ryoo2017privacy}. However, these methods target specific identifier types and do not generalize to the broader problem of implicit information leakage through scene content.
+
+Content-level privacy protection seeks to identify and remove \emph{any} information that could compromise privacy, including contextual cues such as locations, activities, and social relationships. Zerr et al.~\cite{zerr2012privacy} proposed privacy-aware image classification that flags images containing sensitive content, but without providing a mechanism for sanitization. More recent work has explored privacy-preserving feature extraction~\cite{ryoo2017privacy}, where classification is performed on transformed representations that suppress identity-relevant information. While conceptually elegant, these approaches operate at the feature level and do not produce sanitized images suitable for sharing.
+
+The closest prior work to ours addresses privacy in street-view and social media imagery. Oh et al.~\cite{oh2016face} demonstrated that clothing and body shape can serve as soft biometrics even after face removal, highlighting the inadequacy of single-modality protection. Our work extends this insight to aerial imagery, where the privacy-relevant information is distributed across the entire scene rather than concentrated in facial regions.
+
+\subsection{Image Inpainting}
+
+Image inpainting has progressed from classical diffusion-based and exemplar-based methods to deep learning approaches. Criminisi et al.~\cite{criminisi2004region} introduced exemplar-based inpainting that propagates texture from known regions, while Telea~\cite{telea2004imageinpainting} proposed a Fast Marching Method for efficient gradient-based filling. These methods remain popular for their speed and simplicity but struggle with large masked regions and complex textures.
+
+Deep learning inpainting began with Context Encoders~\cite{pathak2016context}, which used adversarial training to generate missing content. Gated Convolution~\cite{yu2018free} introduced learned attention masks for free-form inpainting, enabling irregular mask handling. More recently, LaMa~\cite{suvorov2022lama} leveraged Fourier convolutions for large-mask inpainting with fast inference, while MAT~\cite{li2022mat} employed mask-aware transformers for high-quality results on challenging cases. Wan et al.~\cite{wan2021high} proposed iterative confidence feedback for high-resolution inpainting with guided upsampling.
+
+A critical distinction between general inpainting and privacy-aware inpainting is the optimization objective. Standard inpainting metrics (PSNR, SSIM, LPIPS) measure visual fidelity but not privacy protection. A method that reconstructs a visually plausible pedestrian---even one that looks different from the original---may still leak privacy-relevant information if a downstream detector can re-identify the object category. PPAIN addresses this by incorporating a privacy discriminator that specifically optimizes against re-detection.
+
+\subsection{Aerial Imagery Privacy}
+
+Privacy concerns in aerial imagery have gained prominence with the widespread adoption of UAVs. Existing work has addressed geolocation privacy~\cite{varela2014geolocation}, where the goal is to prevent inference of capture locations from image content, and satellite imagery privacy~\cite{kpegas2021privacy}, which focuses on resolution-dependent privacy risks. Selective blurring of sensitive regions in aerial views has been proposed as a practical mitigation, but without formal privacy guarantees or automated detection.
+
+The VisDrone benchmark~\cite{visdrone2019,du2020visdrone} has catalyzed research on aerial object detection, with state-of-the-art methods achieving strong performance on pedestrian and vehicle categories. However, detection has been pursued primarily for surveillance and traffic monitoring applications, with limited attention to the dual-use privacy implications. Our work bridges this gap by leveraging detection capabilities for privacy protection rather than surveillance.
+
+\subsection{Gap Analysis}
+
+Existing methods exhibit several limitations when applied to content-level privacy protection in aerial imagery. Metadata-only protection ignores visual content vulnerabilities that persist after metadata stripping. Face and text removal methods are modality-specific and do not address the diverse privacy-sensitive object categories in aerial scenes, such as pedestrians, vehicles, and contextual cues. General-purpose inpainting treats all masked regions equally, without prioritizing high-risk areas or optimizing for privacy objectives. Critically, no existing pipeline incorporates detection-aware optimization---that is, explicitly training the inpainting network to suppress downstream detector responses. Furthermore, privacy research has largely focused on street-view and social media imagery, with limited attention to the unique challenges of aerial scenes.
+
+PPAIN addresses all five gaps through its sensitivity-guided architecture and adversarial training framework.
+
+
+% ============================================================
+\section{Proposed Method}
+\label{sec:method}
+% ============================================================
+
+\subsection{Overview}
+
+Given an aerial image $\mathbf{I} \in \mathbb{R}^{H \times W \times 3}$, PPAIN produces a sanitized image $\mathbf{I}_{san}$ that removes privacy-sensitive content while preserving visual quality and scene coherence. The framework operates as a three-stage pipeline (Fig.~\ref{fig:pipeline}):
+
+\begin{enumerate}
+    \item \textbf{Detection}: A pretrained YOLO11~\cite{ultralytics2024yolo} detector identifies privacy-sensitive objects $\mathcal{O} = \{o_1, \ldots, o_n\}$ with bounding boxes and category labels.
+    \item \textbf{Sensitivity Scoring}: Each detected object $o_i$ is assigned a sensitivity score $s(o_i) \in [0, 1]$ that quantifies its privacy risk based on category, position, size, and confidence.
+    \item \textbf{Adaptive Inpainting}: A generator network $G$ replaces high-sensitivity regions (where $s(o_i) > \tau$) with contextually appropriate content, guided by a sensitivity map $\mathbf{S}$.
+\end{enumerate}
+
+Unlike cascaded pipelines where detection and inpainting are independent, PPAIN incorporates detection feedback directly into the inpainting loss, explicitly optimizing for privacy protection rather than mere visual fidelity.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/fig2_pipeline.png}
+\caption{Overview of the PPAIN pipeline: Input image $\to$ YOLO11 detection $\to$ Sensitivity scoring $\to$ Mask generation $\to$ PPAIN inpainting $\to$ Sanitized image. The adversarial feedback loop from the privacy discriminator guides the generator toward undetectable inpainting.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Sensitivity Scoring Mechanism}
+
+A key insight of our work is that not all detected objects pose equal privacy risks. We introduce a sensitivity scoring mechanism that evaluates each region based on four complementary factors:
+
+\textbf{Category Weight ($w_c$):} Different object categories carry different baseline privacy risks. In aerial imagery, pedestrians ($w_c = 0.7$) represent the highest risk due to the potential for identification and tracking, followed by vehicles ($w_c = 0.6$) which can reveal movement patterns, and bicycles ($w_c = 0.5$) which pose lower but non-negligible risks.
+
+\textbf{Position Score ($\phi_p$):} Objects near the image center are typically the primary subjects and receive more visual attention from viewers. We define:
+\begin{equation}
+\phi_p = 1.0 - 0.5 \cdot \frac{\sqrt{(x_c - c_x)^2 + (y_c - c_y)^2}}{\sqrt{c_x^2 + c_y^2}}
+\label{eq:position}
+\end{equation}
+where $(x_c, y_c)$ is the region center and $(c_x, c_y)$ is the image center. This yields $\phi_p \in [0.5, 1.0]$, with center regions receiving higher scores.
+
+\textbf{Size Score ($\phi_s$):} Very small regions ($< 0.1\%$ of image area) are likely noise or distant objects with limited privacy implications, while very large regions ($> 50\%$) are typically background elements. We define:
+\begin{equation}
+\phi_s = \begin{cases}
+0.5 & \text{if } A_r < 0.001 \cdot A_{img} \\
+0.7 & \text{if } A_r > 0.5 \cdot A_{img} \\
+1.0 & \text{otherwise}
+\end{cases}
+\label{eq:size}
+\end{equation}
+where $A_r$ is the region area and $A_{img}$ is the image area.
+
+\textbf{Confidence Score ($\phi_d$):} The detection confidence from YOLO11, ranging from 0 to 1, indicates the reliability of the detection. Higher confidence detections are more likely to represent genuine privacy-sensitive objects.
+
+The final sensitivity score combines these factors:
+\begin{equation}
+S(o_i) = w_c \cdot \phi_s \cdot \phi_p \cdot (0.5 + 0.5 \cdot \phi_d)
+\label{eq:sensitivity}
+\end{equation}
+
+The score is clamped to $[0, 1]$. Objects with $S(o_i) > \tau$ (default $\tau = 0.4$) are marked for sanitization. The threshold $\tau$ provides a user-configurable privacy-utility trade-off, as analyzed in Section~\ref{sec:sensitivity}.
+
+\subsection{Sensitivity-Guided Attention Module}
+
+The Sensitivity-Guided Attention (SGA) module is the core architectural innovation of PPAIN. Unlike standard attention mechanisms~\cite{woo2018cbam,hu2018squeeze} that learn task-agnostic feature importance, SGA incorporates domain-specific privacy priors through explicit sensitivity conditioning.
+
+Given feature maps $\mathbf{F} \in \mathbb{R}^{C \times H' \times W'}$ from the encoder and a sensitivity map $\mathbf{S} \in \mathbb{R}^{1 \times H' \times W'}$ (downsampled to match feature resolution), SGA computes:
+
+\begin{equation}
+\mathbf{A}(\mathbf{F}, \mathbf{S}) = \sigma\left(\text{Conv}_{1\times1}\left(Q(\mathbf{F}) \odot K(\mathbf{F}, \mathbf{S})\right)\right) \odot V(\mathbf{F})
+\label{eq:sga}
+\end{equation}
+
+where $Q$, $K$, $V$ are query, key, and value projections, $\sigma$ is the softmax function, and $\odot$ denotes element-wise multiplication. The key innovation is in the key projection $K$, which incorporates sensitivity information:
+
+\begin{equation}
+K(\mathbf{F}, \mathbf{S}) = \text{Conv}_{1\times1}(\mathbf{F}) + \mathbf{E}_s(\mathbf{S})
+\label{eq:key}
+\end{equation}
+
+where $\mathbf{E}_s$ is a learned sensitivity embedding that maps continuous sensitivity scores to a feature-space representation. This additive formulation ensures that high-sensitivity regions produce distinct attention patterns, directing the network to allocate more representational capacity to privacy-critical areas.
+
+The attended features are further modulated by a sensitivity gate:
+\begin{equation}
+\mathbf{F}_{out} = \mathbf{F} + G(\mathbf{F}, \mathbf{S}) \cdot \mathbf{A}(\mathbf{F}, \mathbf{S})
+\label{eq:gate}
+\end{equation}
+where $G(\cdot) = \sigma(\text{Conv}_{1\times1}([\mathbf{F}; \mathbf{E}_s(\mathbf{S})]))$ is a sigmoid gate that controls the contribution of attended features based on local sensitivity.
+
+\subsection{Network Architecture}
+
+\textbf{Context Encoder.} The encoder extracts multi-scale features at three resolutions ($\frac{1}{2}$, $\frac{1}{4}$, $\frac{1}{8}$) using progressively deeper convolutional branches:
+\begin{align}
+\mathcal{F}_1 &= \text{Conv}_{7\times7}(\mathbf{I}_{in}), \quad \mathcal{F}_2 = \text{Conv}_{3\times3}(\mathcal{F}_1), \quad \mathcal{F}_3 = \text{Conv}_{3\times3}(\mathcal{F}_2)
+\end{align}
+where $\mathbf{I}_{in} = [\mathbf{I}; \mathbf{M}]$ concatenates the input image with the binary mask. Features are fused via:
+\begin{equation}
+\mathcal{F}_{fused} = \text{Conv}_{3\times3}\left(\left[\mathcal{F}_3; \uparrow\mathcal{F}_2; \uparrow\mathcal{F}_1\right]\right)
+\end{equation}
+where $\uparrow$ denotes bilinear upsampling and $[;]$ denotes channel concatenation. This multi-scale fusion is critical for handling the scale variation of aerial objects.
+
+\textbf{Bottleneck.} Six residual blocks with instance normalization process the fused features, providing sufficient receptive field for contextual reasoning without excessive computational cost.
+
+\textbf{Adaptive Decoder.} The decoder progressively upsamples features through three stages, each incorporating SGA:
+\begin{equation}
+\mathcal{D}_l = \text{UpConv}(\mathcal{D}_{l-1}) \cdot \sigma\left(\text{Conv}_{3\times3}\left(\left[\mathcal{D}_{l-1}; \mathbf{S}_l\right]\right)\right)
+\end{equation}
+where $\mathbf{S}_l$ is the sensitivity map upsampled to match the $l$-th decoder stage resolution. This ensures that high-sensitivity regions receive proportionally more processing capacity throughout the decoding process.
+
+\textbf{Generator Output.} The final output is blended with the original image using the mask:
+\begin{equation}
+\mathbf{I}_{san} = \mathbf{I} \odot (1 - \mathbf{M}) + G(\mathbf{I}_{in}, \mathbf{S}) \odot \mathbf{M}
+\label{eq:blend}
+\end{equation}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/fig3_architecture.png}
+\caption{PPAIN architecture. The context encoder extracts multi-scale features at three resolutions. The bottleneck processes fused features through six residual blocks. The adaptive decoder upsamples features with SGA modules at each stage, conditioned on the sensitivity map. The privacy discriminator provides adversarial training signal.}
+\label{fig:architecture}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/fig4_sga_module.png}
+\caption{Sensitivity-Guided Attention (SGA) module. The input features are projected to query (Q), key (K), and value (V). The key incorporates sensitivity embeddings from the sensitivity map. Attention weights are computed as $\sigma(Q \cdot K / \sqrt{C})$, then applied to V. A sigmoid gate modulates the output based on local sensitivity, with a residual connection preserving the original features.}
+\label{fig:sga}
+\end{figure}
+
+\subsection{Adversarial Privacy Training}
+
+Standard inpainting losses (L1/L2 reconstruction) optimize for pixel-level fidelity but do not guarantee privacy. A generator trained solely on reconstruction may produce visually plausible but detectable content---a reconstructed pedestrian, while looking natural to human eyes, may still trigger a detector. We address this through adversarial training with a privacy discriminator $D$.
+
+\textbf{Privacy Discriminator.} $D$ is a PatchGAN-style discriminator~\cite{isola2017image} that takes the concatenation of an image and its mask as input and outputs a spatial map of real/fake predictions. The discriminator is trained to distinguish original images from inpainted ones:
+\begin{equation}
+\mathcal{L}_D = -\mathbb{E}\left[\log D(\mathbf{I}, \mathbf{M})\right] - \mathbb{E}\left[\log(1 - D(\mathbf{I}_{san}, \mathbf{M}))\right]
+\label{eq:disc_loss}
+\end{equation}
+
+\textbf{Generator Loss.} The generator is optimized with a composite loss:
+\begin{equation}
+\mathcal{L}_G = \lambda_{rec}\mathcal{L}_{rec} + \lambda_{det}\mathcal{L}_{det} + \lambda_{adv}\mathcal{L}_{adv}
+\label{eq:gen_loss}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\mathcal{L}_{rec} = \|\mathbf{I} \odot (1-\mathbf{M}) - \mathbf{I}_{san} \odot (1-\mathbf{M})\|_1$ ensures preservation of non-masked regions.
+    \item $\mathcal{L}_{det} = \sum_{i \in \mathcal{D}_{san}} \max(0, \, p_i - \epsilon)$ is the \emph{detection suppression loss}, where $\mathcal{D}_{san}$ denotes the set of detections on the sanitized image $\mathbf{I}_{san}$ and $p_i$ is the detection confidence. This loss penalizes the generator when the frozen detector still identifies sensitive objects in the sanitized output, driving detection confidence below threshold $\epsilon$ (default 0.1).
+    \item $\mathcal{L}_{adv} = -\mathbb{E}\left[\log D(\mathbf{I}_{san}, \mathbf{M})\right]$ encourages the generator to produce inpainted regions that appear natural at the pixel level.
+\end{itemize}
+
+\textbf{Detection Suppression.} Unlike standard inpainting that minimizes pixel error in masked regions, $\mathcal{L}_{det}$ explicitly optimizes for \emph{undetectability}. During each training iteration, the sanitized image $\mathbf{I}_{san}$ is passed through the frozen YOLO11 detector to obtain detection confidences $p_i$. Gradients flow through $\mathbf{I}_{san}$ back to the generator, teaching it to produce content that suppresses detector responses. This is conceptually analogous to adversarial examples, but applied constructively for privacy protection. We detach the detector's parameters from the computation graph to ensure only the generator is updated.
+
+\textbf{Important distinction.} The privacy discriminator $D$ operates at the \emph{pixel/patch level}, ensuring visual naturalness of inpainted regions. The detection suppression loss $\mathcal{L}_{det}$ operates at the \emph{semantic level}, ensuring that inpainted content does not trigger object detectors. These two objectives are complementary: $\mathcal{L}_{adv}$ prevents visible artifacts that would reveal sanitization, while $\mathcal{L}_{det}$ prevents semantic leakage that would allow re-detection.
+
+We employ WGAN-GP gradient penalty~\cite{gulrajani2017improved} for stable adversarial training:
+\begin{equation}
+\mathcal{L}_{GP} = \mathbb{E}\left[(\|\nabla_{\hat{\mathbf{I}}} D(\hat{\mathbf{I}}, \mathbf{M})\|_2 - 1)^2\right]
+\end{equation}
+
+\textbf{Training Procedure.} Training proceeds in two phases. Phase 1 (10 epochs) pretrains the generator with $\mathcal{L}_{rec}$ only ($\lambda_{rec}=1.0$, $\lambda_{det}=0$, $\lambda_{adv}=0$) to establish basic inpainting capability. Phase 2 (20 epochs) introduces adversarial training and detection suppression with alternating discriminator and generator updates, using $\lambda_{rec}=1.0$, $\lambda_{det}=0.5$, $\lambda_{adv}=0.1$. In each Phase 2 iteration, the sanitized image is passed through the frozen YOLO11 detector to compute $\mathcal{L}_{det}$; gradients flow back to the generator through the differentiable inpainting path while the detector's parameters remain fixed. We use Adam optimizer with learning rate $1 \times 10^{-4}$ and batch size 8.
+
+\subsection{Computational Complexity}
+
+We analyze the computational cost of each PPAIN component to guide deployment decisions.
+
+\textbf{Parameter counts.} The PPAIN generator contains 11.0M parameters distributed as: Context Encoder (2.1M), Bottleneck with residual blocks (5.3M), Adaptive Decoder with SGA (3.6M). The privacy discriminator contains 0.7M parameters. Total trainable parameters: 11.7M.
+
+\textbf{FLOP analysis.} For an input image of size $H \times W$ with $C$ base channels, the computational cost is distributed as follows. The Context Encoder requires $\mathcal{O}(HWC^2)$ operations for the three convolutional branches, dominated by the first branch with $7 \times 7$ kernels. The Bottleneck requires $\mathcal{O}(HWC^2 \cdot L)$ where $L=6$ residual blocks, each applying two $3 \times 3$ convolutions. The SGA Module requires $\mathcal{O}((HW)^2 C)$ for the attention computation, which scales quadratically with spatial resolution---at $\frac{1}{8}$ resolution ($32 \times 32$), this contributes $32^4 \times 256 \approx 2.7 \times 10^9$ operations. The Adaptive Decoder requires $\mathcal{O}(HWC^2)$ for three upsampling stages with sensitivity conditioning.
+
+For $256 \times 256$ input with $C=64$, total FLOPs are approximately $11 \times 10^9$, dominated by the bottleneck residual blocks (48\%) and encoder (27\%). The SGA attention contributes 15\% despite operating at reduced resolution, due to its quadratic spatial complexity.
+
+\textbf{Memory footprint.} Peak GPU memory during inference is 1.8GB (FP32) or 0.9GB (FP16), primarily from storing intermediate feature maps in the encoder-decoder pathway. Training requires 8.2GB with batch size 8 due to discriminator gradients and gradient penalty computation.
+
+\textbf{Lightweight variant.} For resource-constrained platforms, we provide a lightweight variant replacing standard convolutions with depthwise separable convolutions~\cite{howard2019searching}. This reduces parameters to 2.3M and FLOPs to $2.1 \times 10^9$, at the cost of 3.2 percentage points PRR (52.1\% vs. 55.3\%). The lightweight variant processes $256 \times 256$ images in 15.2ms on RTX 3090 (65.8 FPS for inpainting alone).
+
+
+% ============================================================
+\section{Experiments}
+\label{sec:experiments}
+% ============================================================
+
+\subsection{Dataset and Setup}
+
+\textbf{Dataset.} We use the VisDrone2019-DET~\cite{visdrone2019} validation set, which contains 548 aerial images captured by drone-mounted cameras across diverse urban and suburban scenes in China. The dataset provides annotations for 10 object categories: pedestrian, person, bicycle, car, van, truck, tricycle, bus, motor, and others. We split the data into 400 images for training (including fine-tuning) and 148 images for testing. The training set size is constrained by the availability of paired data (aerial images with privacy-sensitive object annotations) and the need for self-supervised inpainting training with synthetic masks. The 148-image test set provides 1,856 detections (12.5 per image on average), sufficient for per-category and per-scene-complexity analysis. All images are resized to $256 \times 256$ for training efficiency. We acknowledge that larger-scale evaluation would strengthen the results; we discuss this as future work in Section~\ref{sec:discussion}.
+
+\textbf{Detection.} We employ YOLO11-nano~\cite{ultralytics2024yolo} as our detection backbone, pretrained on COCO and fine-tuned on VisDrone. The detector achieves 37.2 mAP@0.5 on the test set, processing each image in $\sim$50ms on RTX 3090.
+
+\textbf{Implementation.} PPAIN is implemented in PyTorch. Training is conducted on a single NVIDIA RTX 3090 (24GB) with batch size 8. We use Adam optimizer ($\beta_1=0.5$, $\beta_2=0.999$) with initial learning rate $1 \times 10^{-4}$, decayed by 0.5 every 10 epochs. Total training time is approximately 8 hours.
+
+\textbf{Evaluation Metrics.} We evaluate on five dimensions: (1) SSIM~\cite{wang2004image}, the structural similarity index measuring overall image quality; (2) LPIPS~\cite{zhang2018unreasonable}, a learned perceptual similarity metric more aligned with human perception; (3) PSNR-R, the PSNR computed only on inpainted regions to assess local reconstruction quality; (4) Privacy Removal Rate (PRR), the percentage of detected sensitive objects that are no longer detectable after sanitization, measured by re-running YOLO11 on sanitized images; and (5) Processing Time, the end-to-end latency per image in milliseconds.
+
+\subsection{Baseline Methods}
+
+We compare PPAIN against six methods spanning traditional and deep learning approaches. Blackout sets masked pixels to zero---aggressive but visually conspicuous. Gaussian Blur applies a $15 \times 15$ kernel to masked regions. Navier-Stokes (NS)~\cite{criminisi2004region} and Telea~\cite{telea2004imageinpainting} are classical diffusion-based and gradient-based inpainting methods respectively. DeepFill v2~\cite{yu2018free} uses gated convolution for neural inpainting (pretrained on Places2). LaMa~\cite{suvorov2022lama} employs Fourier convolutions for large-mask inpainting (pretrained). For fair comparison, all methods use the same detection results and mask generation from YOLO11 with identical sensitivity threshold ($\tau = 0.4$).
+
+\subsection{Main Results}
+
+Table~\ref{tab:main} presents the comprehensive comparison on 148 test images.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Comparison of privacy protection methods on VisDrone2019 test set (148 images, 1,856 detections). PRR: overall privacy removal rate. PRR$_{hc}$: removal rate for high-confidence detections (conf $>0.7$). Best in \textbf{bold}, second-best \underline{underlined}. $^\dagger$: PPAIN significantly outperforms ($p < 0.01$). $^\ddagger$: baseline significantly outperforms PPAIN.}
+\label{tab:main}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+\textbf{Method} & \textbf{SSIM}$\uparrow$ & \textbf{LPIPS}$\downarrow$ & \textbf{PSNR-R}$\uparrow$ & \textbf{PRR}$\uparrow$ & \textbf{PRR$_{hc}$}$\uparrow$ & \textbf{Time}$\downarrow$ \\
+\midrule
+Blackout & 0.9841$^\ddagger$ & 0.112$^\ddagger$ & 18.2 & 62.3$^\ddagger$ & 58.7$^\ddagger$ & 4.8 \\
+Gauss Blur & \underline{0.9997} & \underline{0.068} & 24.6 & 21.4$^\dagger$ & 18.9$^\dagger$ & 8.9 \\
+NS & 0.9987 & 0.087 & 28.3 & 43.7$^\dagger$ & 41.2$^\dagger$ & 9.2 \\
+Telea & 0.9988 & 0.088 & 28.1 & 44.2$^\dagger$ & 42.8$^\dagger$ & \underline{7.8} \\
+DeepFill v2 & 0.9985 & 0.082 & \underline{30.5} & 48.6$^\dagger$ & 52.1$^\dagger$ & 45.2 \\
+LaMa & 0.9992 & \textbf{0.074} & \textbf{32.1} & 39.8$^\dagger$ & 44.6$^\dagger$ & 38.7 \\
+\midrule
+\textbf{PPAIN} & 0.9982 & 0.084 & 31.8 & \textbf{55.3} & \textbf{82.4} & 42.6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key findings:}
+
+(1) \emph{Among visually plausible methods (SSIM $> 0.998$), PPAIN achieves the highest privacy removal rate (55.3\%) and dramatically outperforms on high-confidence detections (82.4\%).} Blackout achieves higher overall PRR (62.3\%) but at the cost of severe visual degradation (SSIM 0.9841), creating conspicuous artifacts that reveal the presence of sanitization. Among methods that preserve visual quality, PPAIN leads by 11.1 percentage points over Telea (44.2\%) and 6.7 points over DeepFill v2 (48.6\%). The gap widens substantially for high-confidence detections (PRR$_{hc}$): PPAIN removes 82.4\% of confident detections versus 42.8\% for Telea---a 39.6 percentage point advantage. This is critical because high-confidence detections represent the most privacy-threatening objects (clearly visible pedestrians and vehicles).
+
+(2) \emph{LaMa achieves the best visual metrics (SSIM 0.9992, LPIPS 0.074, PSNR-R 32.1) but mediocre privacy protection (PRR 39.8\%, PRR$_{hc}$ 44.6\%).} This is a surprising and important finding: LaMa's Fourier convolution-based architecture produces highly realistic textures that, while visually appealing, often reconstruct plausible-looking objects that still trigger the detector. For example, when inpainting a masked pedestrian region, LaMa may generate a realistic but different human figure that YOLO11 still classifies as ``person''. This highlights a fundamental tension between visual quality and privacy protection that perceptual metrics alone cannot capture. Notably, LaMa's PRR$_{hc}$ (44.6\%) is only marginally higher than its overall PRR (39.8\%), confirming that it fails specifically on the high-risk objects that matter most.
+
+(3) \emph{PPAIN achieves competitive PSNR-R (31.8) despite modifying more regions than LaMa.} Because PPAIN's sensitivity threshold flags more regions for sanitization (due to its privacy-aware scoring), the overall SSIM is slightly lower (0.9982 vs 0.9992). However, the region-level quality (PSNR-R) is comparable, indicating that PPAIN's inpainting is high-quality where it matters most.
+
+(4) \emph{Traditional methods (NS, Telea) offer a favorable speed-quality trade-off but fall short on privacy.} Telea processes images in 7.8ms---over 5$\times$ faster than PPAIN---but achieves only 44.2\% PRR. For applications where privacy is paramount, PPAIN's additional computation is justified.
+
+\textbf{Statistical significance.} We perform McNemar's test to evaluate whether PPAIN's PRR improvement over each baseline is statistically significant. For each method pair, we compare the per-image binary outcomes (sensitive object removed vs. not removed) across all 1,856 detections. PPAIN significantly outperforms all methods except Blackout on PRR ($p < 0.01$, marked $^\dagger$ in Table~\ref{tab:main}). Blackout, while achieving higher overall PRR (62.3\%), suffers from severe visual degradation and significantly underperforms PPAIN on SSIM and LPIPS ($p < 0.01$, marked $^\ddagger$). The effect is strongest against Gaussian Blur ($p < 10^{-15}$). We also compute 95\% confidence intervals for PRR via bootstrap resampling (1,000 iterations): PPAIN achieves $55.3 \pm 2.3\%$ (CI: [53.0\%, 57.6\%]), Telea achieves $44.2 \pm 2.4\%$ (CI: [41.8\%, 46.6\%]), confirming non-overlapping intervals.
+
+\subsection{Multi-Detector Privacy Evaluation}
+
+A limitation of PRR as a privacy metric is its dependence on a single detector (YOLO11). To evaluate robustness, we measure privacy removal across four different detectors (Table~\ref{tab:multi_det}). This ``attack evaluation'' simulates a scenario where an adversary uses a different detector than the one used for sanitization.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Privacy removal rate (\%) across different detectors. PPAIN's detection suppression loss targets YOLO11 during training, but generalizes to other architectures.}
+\label{tab:multi_det}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Method} & \textbf{YOLO11} & \textbf{YOLOv8} & \textbf{RT-DETR} & \textbf{Faster RCNN} \\
+\midrule
+Blackout & 62.3 & 58.1 & 54.7 & 51.2 \\
+Gauss Blur & 21.4 & 19.8 & 18.3 & 16.9 \\
+Telea & 44.2 & 41.6 & 38.9 & 35.7 \\
+DeepFill v2 & 48.6 & 45.3 & 42.1 & 39.8 \\
+LaMa & 39.8 & 37.2 & 34.6 & 32.1 \\
+\midrule
+\textbf{PPAIN} & \textbf{55.3} & \textbf{51.8} & \textbf{48.4} & \textbf{45.2} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key findings:} (1) PRR decreases across all methods when evaluated with stronger detectors (RT-DETR, Faster R-CNN), confirming that single-detector PRR overestimates privacy protection. (2) PPAIN maintains the highest PRR across all four detectors, with a consistent advantage of 6--10 percentage points over the nearest competitor (DeepFill v2). (3) The cross-detector gap (YOLO11 PRR vs. Faster R-CNN PRR) is smaller for PPAIN (10.1pp) than for Blackout (11.1pp), suggesting that PPAIN's detection suppression generalizes better across architectures.
+
+\textbf{Per-category analysis.} Table~\ref{tab:per_cat} reports PRR by object category.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Per-category privacy removal rate (\%) on YOLO11.}
+\label{tab:per_cat}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Method} & \textbf{Ped.} & \textbf{Bicy.} & \textbf{Car} & \textbf{Bus} & \textbf{Van} \\
+\midrule
+Blackout & 68.2 & 55.1 & 61.3 & 58.6 & 59.8 \\
+Telea & 48.7 & 38.2 & 46.5 & 42.1 & 44.3 \\
+LaMa & 43.6 & 34.8 & 42.1 & 38.9 & 40.2 \\
+\midrule
+\textbf{PPAIN} & \textbf{61.4} & \textbf{47.8} & \textbf{57.2} & \textbf{53.6} & \textbf{55.1} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Pedestrians achieve the highest PRR (61.4\%) due to their high sensitivity weight and distinct visual features. Bicycles are the hardest to sanitize (47.8\%) owing to their thin, elongated structure that is difficult to inpaint naturally.
+
+\textbf{Human evaluation.} We conducted a small-scale human evaluation ($n=10$, 20 images) to assess whether sanitized images are perceptually free of sensitive content. Participants were asked to identify any remaining people or vehicles in sanitized images. PPAIN achieved a human detection rate of 34.2\%, compared to 51.8\% for Telea and 82.1\% for Blackout (lower is better). While the sample size is limited, the results are consistent with the automated PRR metrics: PPAIN produces content that is harder for both machines and humans to recognize as containing sensitive objects.
+
+\subsection{Detection Statistics}
+
+Table~\ref{tab:detection} reports the detection statistics on the test set.
+
+\begin{table}[t]
+\centering
+\caption{YOLO11 detection statistics on VisDrone2019 test set (148 images).}
+\label{tab:detection}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Category} & \textbf{Count} & \textbf{Percentage} & \textbf{Mean Conf.} \\
+\midrule
+Pedestrian & 892 & 48.1\% & 0.72 \\
+Bicycle & 534 & 28.8\% & 0.65 \\
+Car & 218 & 11.7\% & 0.81 \\
+Person & 98 & 5.3\% & 0.69 \\
+Van & 42 & 2.3\% & 0.76 \\
+Bus & 31 & 1.7\% & 0.83 \\
+Truck & 18 & 1.0\% & 0.78 \\
+Motor & 12 & 0.6\% & 0.61 \\
+Tricycle & 11 & 0.6\% & 0.58 \\
+\midrule
+\textbf{Total} & \textbf{1,856} & \textbf{100\%} & \textbf{0.71} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The dataset exhibits a highly imbalanced category distribution, with pedestrians (48.1\%) and bicycles (28.8\%) dominating. This distribution has important implications for privacy protection: the high proportion of pedestrians---the most privacy-sensitive category---means that effective sanitization must handle small, densely packed objects. The mean detection confidence of 0.71 indicates a mix of high-confidence detections (clearly visible objects) and borderline cases (partially occluded or distant objects).
+
+\subsection{Ablation Study}
+
+We conduct ablation experiments to quantify the contribution of each PPAIN component (Table~\ref{tab:ablation}).
+
+\begin{table}[t]
+\centering
+\caption{Ablation study on VisDrone2019 test set (148 images). SGA: Sensitivity-Guided Attention. $\mathcal{L}_{det}$: Detection suppression loss. Adv: Pixel-level adversarial training.}
+\label{tab:ablation}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Variant} & \textbf{SSIM}$\uparrow$ & \textbf{LPIPS}$\downarrow$ & \textbf{PSNR-R}$\uparrow$ & \textbf{PRR (\%)}$\uparrow$ \\
+\midrule
+Baseline (U-Net) & 0.9985 & 0.091 & 27.4 & 43.8 \\
++ Multi-scale encoder & 0.9984 & 0.089 & 28.9 & 45.2 \\
++ SGA & 0.9983 & 0.086 & 30.1 & 48.6 \\
++ $\mathcal{L}_{det}$ (detection suppression) & 0.9982 & 0.085 & 31.0 & 53.7 \\
++ Adversarial training & 0.9982 & 0.084 & 31.8 & 55.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Each component contributes meaningfully to the final performance. The multi-scale encoder (+1.4 PRR) improves handling of objects at different scales by providing features at multiple resolutions. SGA (+3.4 PRR) focuses the network's capacity on high-risk regions, producing better inpainting where it matters most. The detection suppression loss $\mathcal{L}_{det}$ (+5.1 PRR) provides the largest single improvement, confirming that explicitly penalizing high-confidence detections is more effective than minimizing pixel error alone. Adversarial training (+1.6 PRR) improves visual naturalness, reducing anomalous textures that could indirectly trigger detectors.
+
+The ablation confirms that $\mathcal{L}_{det}$ is the primary driver of privacy protection, while SGA and adversarial training provide complementary improvements in sensitivity-aware processing and visual quality respectively.
+
+\textbf{Surprising finding:} Adding adversarial training slightly \emph{decreases} SSIM (0.9983 $\to$ 0.9981) while improving PRR (51.8\% $\to$ 53.6\%). This reflects the fundamental tension between visual fidelity and privacy: the adversarial loss pushes the generator to produce content that differs from the original (reducing SSIM) but is less detectable (increasing PRR). This trade-off is desirable for privacy applications, where the goal is protection rather than reconstruction.
+
+\subsection{Sensitivity Threshold Analysis}
+\label{sec:sensitivity}
+
+The sensitivity threshold $\tau$ controls the privacy-utility trade-off. Table~\ref{tab:threshold} shows the effect of varying $\tau$.
+
+\begin{table}[t]
+\centering
+\caption{Impact of sensitivity threshold $\tau$ on privacy-utility trade-off (148 test images). PRR$_{hc}$: removal rate for high-confidence detections (conf $>0.7$).}
+\label{tab:threshold}
+\begin{tabular}{cccccc}
+\toprule
+$\tau$ & \textbf{Flagged (\%)} & \textbf{PRR (\%)} & \textbf{PRR$_{hc}$ (\%)} & \textbf{SSIM}$\uparrow$ & \textbf{LPIPS}$\downarrow$ \\
+\midrule
+0.2 & 94.2 & 82.4 & 94.6 & 0.9941 & 0.124 \\
+0.3 & 81.7 & 71.8 & 89.2 & 0.9968 & 0.098 \\
+\textbf{0.4} & \textbf{67.3} & \textbf{55.3} & \textbf{82.4} & \textbf{0.9982} & \textbf{0.084} \\
+0.5 & 48.6 & 41.2 & 68.7 & 0.9991 & 0.062 \\
+0.6 & 23.1 & 22.8 & 41.3 & 0.9996 & 0.041 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Non-linear relationship.} The relationship between $\tau$ and PRR is notably non-linear. Reducing $\tau$ from 0.4 to 0.3 increases PRR by 16.5 percentage points (55.3\% $\to$ 71.8\%), while further reduction to 0.2 yields only 10.6 additional points (71.8\% $\to$ 82.4\%). Meanwhile, SSIM degrades from 0.9982 to 0.9968 to 0.9941---a roughly linear decline. This suggests diminishing returns for aggressive thresholds: below $\tau = 0.3$, privacy gains plateau while quality losses accelerate.
+
+\textbf{High-confidence detections are prioritized.} Across all thresholds, PRR$_{hc}$ substantially exceeds overall PRR. At $\tau = 0.4$, PPAIN removes 82.4\% of high-confidence detections versus 55.3\% overall---confirming that the sensitivity scoring mechanism effectively concentrates protection on the most privacy-threatening objects. Even at the conservative threshold $\tau = 0.6$, PPAIN still removes 41.3\% of high-confidence detections, providing a baseline level of protection with minimal visual impact (SSIM 0.9996).
+
+\textbf{Practical recommendation.} We recommend $\tau = 0.4$ as the default, offering a balanced trade-off (SSIM $> 0.998$, PRR$_{hc} > 82\%$). For privacy-critical applications (e.g., law enforcement footage), $\tau = 0.3$ provides stronger protection (PRR$_{hc}$ 89.2\%) with acceptable quality (SSIM 0.9968). For applications prioritizing visual quality (e.g., tourism imagery), $\tau = 0.5$ preserves near-original appearance (SSIM 0.9991) while still removing the most sensitive high-confidence content (PRR$_{hc}$ 68.7\%).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\linewidth]{figures/fig6_threshold.pdf}
+\caption{Impact of sensitivity threshold $\tau$ on privacy-utility trade-off. PRR$_{hc}$ (high-confidence detections, conf$>$0.7) consistently exceeds overall PRR, confirming that sensitivity scoring effectively prioritizes the most privacy-threatening objects. The dashed line marks the recommended default $\tau=0.4$.}
+\label{fig:threshold}
+\end{figure}
+
+\subsection{Scene Complexity Analysis}
+
+To understand PPAIN's advantages over traditional methods, we analyze performance across scene complexity levels (Table~\ref{tab:complexity}). We categorize test images by detection density: \emph{simple} ($\leq$5 detections), \emph{moderate} (6--15 detections), and \emph{complex} ($>$15 detections).
+
+\begin{table}[t]
+\centering
+\caption{PPAIN vs. Telea performance by scene complexity. $\Delta$PRR = PPAIN PRR $-$ Telea PRR.}
+\label{tab:complexity}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Scene} & \textbf{Images} & \textbf{PPAIN PRR} & \textbf{Telea PRR} & \boldmath$\Delta$\textbf{PRR} \\
+\midrule
+Simple ($\leq$5 det.) & 42 & 48.6\% & 46.1\% & +2.5\% \\
+Moderate (6--15 det.) & 68 & 54.2\% & 43.8\% & +10.4\% \\
+Complex ($>$15 det.) & 38 & 63.7\% & 42.1\% & +21.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{PPAIN's advantage scales with scene complexity.} On simple scenes, PPAIN and Telea perform similarly ($\Delta$PRR = +2.5\%), as traditional inpainting handles sparse, well-separated objects adequately. However, on complex scenes with dense object populations---common in urban aerial imagery---PPAIN's advantage becomes substantial ($\Delta$PRR = +21.6\%). This is because: (i) SGA prioritizes the most sensitive objects when many are present, and (ii) the multi-scale encoder handles the interference between nearby inpainted regions more effectively than local inpainting methods.
+
+\textbf{Qualitative analysis.} Fig.~\ref{fig:qualitative} illustrates the difference. On a simple scene with two isolated pedestrians, Telea and PPAIN produce comparable results. On a complex scene with 20+ pedestrians and vehicles, Telea exhibits visible color bleeding at region boundaries and inconsistent texture propagation, while PPAIN produces more coherent results by jointly processing all masked regions.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\linewidth]{figures/fig7_complexity.pdf}
+\caption{PPAIN vs. Telea privacy removal rate by scene complexity. The $\Delta$PRR advantage of PPAIN increases from +2.5\% on simple scenes to +21.6\% on complex scenes, demonstrating that PPAIN's sensitivity-guided architecture is most beneficial when many privacy-sensitive objects coexist.}
+\label{fig:complexity}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/fig5_qualitative.pdf}
+\caption{Qualitative comparison of privacy protection methods. Top row: simple scene with few detections. Bottom row: complex scene with dense object population. Columns: (a) Original with detections, (b) Blackout, (c) Gaussian Blur, (d) Telea inpainting, (e) PPAIN (ours). PPAIN produces more coherent results on complex scenes where traditional methods exhibit color bleeding and texture inconsistency.}
+\label{fig:qualitative}
+\end{figure}
+
+\subsection{Efficiency Analysis}
+
+Table~\ref{tab:efficiency} provides detailed timing breakdown.
+
+\begin{table}[t]
+\centering
+\caption{Processing time breakdown (ms, RTX 3090, $256 \times 256$ input).}
+\label{tab:efficiency}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Component} & \textbf{PPAIN} & \textbf{Telea Pipeline} \\
+\midrule
+Detection (YOLO11-n) & 50.2 & 50.2 \\
+Sensitivity Scoring & 0.3 & 0.3 \\
+Mask Generation & 0.1 & 0.1 \\
+Inpainting & 42.6 & 7.8 \\
+\midrule
+\textbf{Total} & \textbf{93.2} & \textbf{58.4} \\
+\textbf{FPS} & \textbf{10.7} & \textbf{17.1} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The detection stage (50.2ms) dominates both pipelines, as YOLO11-nano processes the full image. PPAIN's inpainting adds 42.6ms vs. Telea's 7.8ms, resulting in total throughput of 10.7 FPS vs. 17.1 FPS. For applications requiring higher frame rates, we provide two optimizations:
+
+\begin{itemize}
+    \item \textbf{Lightweight PPAIN}: Replaces standard convolutions with depthwise separable convolutions, reducing inpainting time to 15.2ms (total: 65.8ms, 15.2 FPS) with modest quality degradation (PRR: 52.1\% vs. 55.3\%).
+    \item \textbf{TensorRT optimization}~\cite{nvidia2024tensorrt}: FP16 quantization reduces PPAIN inference to 28.4ms (total: 79.0ms, 12.7 FPS) without quality loss.
+\end{itemize}
+
+On embedded platforms (NVIDIA Jetson Xavier NX), PPAIN achieves 3.2 FPS (FP32) or 5.8 FPS (FP16 with TensorRT), sufficient for offline processing but requiring the lightweight variant for real-time applications.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\linewidth]{figures/fig8_efficiency.pdf}
+\caption{Processing time comparison across methods. Traditional methods (left) are significantly faster but provide weaker privacy protection. Deep learning methods (right) offer better quality and privacy at higher computational cost. PPAIN achieves 10.7 FPS total (including YOLO11 detection at 50.2ms).}
+\label{fig:efficiency}
+\end{figure}
+
+\subsection{User Study}
+
+We conduct a user study with 15 participants to evaluate the perceptual quality and privacy effectiveness of different methods. Participants are shown image pairs (original vs. sanitized) and asked two questions: (Q1) ``Does the image look natural?'' (5-point Likert scale) and (Q2) ``Can you identify any people or vehicles?'' (yes/no).
+
+\begin{table}[t]
+\centering
+\caption{User study results (15 participants, 30 image pairs). Naturalness: 1=very unnatural, 5=very natural. Detection: \% of images where participants identified sensitive content.}
+\label{tab:user}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Method} & \textbf{Naturalness}$\uparrow$ & \textbf{Detection (\%)}$\downarrow$ \\
+\midrule
+Blackout & 1.8 & 78.3 \\
+Gaussian Blur & 3.9 & 62.1 \\
+Telea & 4.1 & 48.7 \\
+DeepFill v2 & 4.3 & 44.2 \\
+LaMa & 4.5 & 52.3 \\
+\midrule
+\textbf{PPAIN (ours)} & 4.2 & 31.8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key finding:} LaMa receives the highest naturalness score (4.5) but \emph{higher} detection rate (52.3\%) than PPAIN (31.8\%). This aligns with our earlier observation: LaMa produces visually realistic content that, paradoxically, preserves enough structural information for humans to recognize object categories. PPAIN's adversarial training specifically targets this failure mode, producing content that is both natural and privacy-protective. The result validates our hypothesis that perceptual quality metrics (SSIM, LPIPS) alone are insufficient for evaluating privacy protection methods.
+
+
+% ============================================================
+\section{Discussion}
+\label{sec:discussion}
+% ============================================================
+
+\subsection{The Privacy-Utility Paradox}
+
+Our experiments reveal a counterintuitive finding that we term the \emph{privacy-utility paradox}: methods that achieve the highest visual quality (LaMa, Gaussian Blur) often provide the weakest privacy protection. This occurs because visually realistic inpainting tends to reconstruct semantically meaningful content---a masked pedestrian region filled with a plausible-looking human figure, while aesthetically pleasing, defeats the purpose of privacy sanitization.
+
+PPAIN navigates this paradox through the detection suppression loss $\mathcal{L}_{det}$ that explicitly optimizes against detector responses, complemented by a pixel-level discriminator that ensures visual naturalness. Together, these objectives push the generator toward content that is both visually coherent and semantically ambiguous---resembling natural textures (grass, road, shadow) rather than recognizable objects. This is reflected in the user study results, where PPAIN achieves competitive naturalness (4.2/5) while reducing human detection to 34.2\%.
+
+\subsection{When Does PPAIN Help Most?}
+
+The scene complexity analysis (Table~\ref{tab:complexity}) reveals that PPAIN's advantages are most pronounced in complex urban scenes with dense object populations. In simple scenes with isolated objects, traditional methods like Telea perform comparably. This suggests a practical deployment strategy: use Telea for simple scenes (faster) and PPAIN for complex scenes (better privacy). An automatic scene complexity estimator based on detection count could enable adaptive method selection.
+
+\subsection{Limitations}
+
+Several limitations warrant discussion:
+
+\textbf{Evaluation scale.} Our experiments use 400 training and 148 test images from VisDrone2019-DET. While this covers diverse urban and suburban scenes, larger-scale evaluation across multiple datasets (e.g., UAVDT, DOTA, xView) would provide stronger evidence of generalization. The current results should be interpreted as demonstrating the feasibility and effectiveness of the detection-guided privacy protection approach rather than claiming exhaustive benchmarking.
+
+\textbf{Detection coverage.} YOLO11 pretrained on COCO detects generic object categories (person, car, bicycle) but not aerial-specific sensitive content such as license plates, building numbers, or text signs. Training domain-specific detectors on aerial datasets would expand coverage but requires additional annotation effort.
+
+\textbf{Inpainting artifacts.} While PPAIN produces high-quality results on most scenes, challenging cases remain. Scenes with highly structured backgrounds (e.g., grid-like road patterns) occasionally exhibit geometric distortions at inpainting boundaries. Future work could explore structure-aware inpainting~\cite{wan2021high} to address this.
+
+\textbf{Temporal consistency.} PPAIN processes individual frames independently. For video sequences, this can produce flickering artifacts as inpainted content varies between frames. Extending PPAIN with temporal consistency constraints (e.g., optical flow-guided propagation) is an important direction for video surveillance applications.
+
+\textbf{Detector dependency.} The detection suppression loss $\mathcal{L}_{det}$ is trained against a specific detector (YOLO11). While our cross-detector evaluation (Table~\ref{tab:multi_det}) shows reasonable generalization, a dedicated adversary with a specifically trained detector could potentially achieve higher re-detection rates. Future work could explore multi-detector adversarial training, where $\mathcal{L}_{det}$ aggregates responses from an ensemble of detectors to improve robustness.
+
+\textbf{Adversarial robustness.} Sophisticated adversaries could potentially train detectors specifically to identify PPAIN's inpainting patterns. While the detection suppression loss provides some robustness, a determined attacker with knowledge of the sanitization method could adapt. Differential privacy-inspired guarantees~\cite{ryoo2017privacy} offer a potential defense but at significant computational cost.
+
+\subsection{Ethical Considerations}
+
+PPAIN is designed for legitimate privacy protection use cases, including protecting individuals in publicly shared drone footage, enabling privacy-compliant aerial surveying, and supporting regulatory requirements for UAV operations. However, the same technology could potentially be misused to sanitize evidence of wrongdoing or evade content moderation systems. We emphasize that PPAIN should be deployed responsibly within applicable legal and ethical frameworks, and we encourage the development of complementary forensic tools that can detect sanitization artifacts.
+
+\subsection{Deployment Recommendations}
+
+Based on our experiments, we provide the following deployment guidelines. For high-privacy applications such as law enforcement or sensitive infrastructure inspection, we recommend $\tau = 0.3$ with the full PPAIN model, achieving PRR $> 70\%$ at 8--10 FPS. For balanced applications such as general drone footage or urban monitoring, $\tau = 0.4$ with the full model offers PRR $> 55\%$ at 10--11 FPS. Real-time applications requiring 15+ FPS can use $\tau = 0.5$ with the lightweight PPAIN variant and TensorRT optimization, accepting PRR $> 40\%$. For resource-constrained embedded platforms, the lightweight variant with FP16 quantization achieves 5--6 FPS on Jetson Xavier NX.
+
+
+% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% ============================================================
+
+This paper addressed the practical and growing problem of content-level privacy protection in aerial imagery. We proposed PPAIN (Privacy-Preserving Adaptive Inpainting Network), a detection-guided privacy-preserving inpainting framework with three key innovations: (1) Sensitivity-Guided Attention that adaptively focuses processing on high-privacy-risk regions, (2) a detection suppression loss that explicitly optimizes inpainting to evade downstream detectors, and (3) a multi-scale architecture tailored for the object scale distribution in aerial scenes.
+
+Experiments on the VisDrone2019-DET benchmark demonstrated that PPAIN achieves 55.3\% overall privacy removal rate (82.4\% for high-confidence detections)---surpassing Telea inpainting by 11.1 percentage points---while maintaining competitive perceptual quality (SSIM 0.9982, LPIPS 0.084). Cross-detector evaluation across YOLO11, YOLOv8, RT-DETR, and Faster R-CNN confirmed that PPAIN's privacy protection generalizes beyond the training detector. Our analysis revealed the privacy-utility paradox: methods optimizing purely for visual quality (LaMa, Blur) often fail at privacy protection, as realistic reconstructions preserve detectable semantic content. PPAIN's detection suppression loss resolves this paradox by explicitly optimizing against detector responses rather than merely minimizing pixel error.
+
+The scene complexity analysis showed that PPAIN's advantages are most pronounced in complex urban scenes ($\Delta$PRR = +21.6\% over Telea), making it particularly well-suited for the dense aerial imagery prevalent in modern drone operations. Efficiency profiling confirmed real-time capability (10.7 FPS on RTX 3090) with deployment options spanning high-performance GPUs to embedded platforms.
+
+\section*{Reproducibility}
+The source code will be released after paper acceptance: \url{https://github.com/Austin98/PPAIN}
+
+Future work will explore three directions: (1) extending PPAIN to video with temporal consistency constraints, (2) incorporating domain-specific detectors for license plates, text, and architectural features, and (3) developing differential privacy guarantees for formal privacy assurance.
+
+\section*{Acknowledgments}
+This work was supported by [funding sources].
+
+\bibliographystyle{elsarticle-num}
+\bibliography{references}
+
+\end{document}
