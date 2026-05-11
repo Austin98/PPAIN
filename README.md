@@ -114,7 +114,7 @@ python scripts/demo.py --mode image --image datasets/VisDrone/images/train/00000
 - Validation: 548 images
 - Test: 1,610 images
 
-The dataset is extracted from `basic_exp_code_vis+aitod.zip`. Each image is processed with YOLO11 for object detection; bounding boxes are converted to masks and sensitivity scores using the formula above.
+Images are processed with YOLO11 for object detection; bounding boxes are converted to masks and sensitivity scores using the formula above.
 
 ### Model Parameters
 
@@ -126,14 +126,9 @@ The dataset is extracted from `basic_exp_code_vis+aitod.zip`. Each image is proc
 
 ### Citation
 
-```bibtex
-@article{ppain2025,
-  title={PPAIN: Privacy-Preserving Adaptive Inpainting Network for Content-Level Protection in Aerial Imagery},
-  author={PPAIN Authors},
-  journal={Engineering Applications of Artificial Intelligence},
-  year={2025}
-}
-```
+If this project is helpful for your research, please cite our paper:
+
+> **[To appear]** PPAIN: Privacy-Preserving Adaptive Inpainting Network for Content-Level Protection in Aerial Imagery. *Engineering Applications of Artificial Intelligence*.
 
 ### License
 
