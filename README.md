@@ -251,7 +251,7 @@ python scripts/demo.py --mode image --image datasets/VisDrone/images/train/00000
 - 验证集：548 张图片
 - 测试集：1,610 张图片
 
-数据集从 `basic_exp_code_vis+aitod.zip` 解压得到。每张图片经过 YOLO11 目标检测，检测框转换为掩码并按论文公式计算敏感度图。
+训练集、验证集、测试集均来自 VisDrone2019 数据集。每张图片经过 YOLO11 目标检测，检测框转换为掩码并按论文公式计算敏感度图。
 
 ### 模型参数量
 
@@ -263,14 +263,9 @@ python scripts/demo.py --mode image --image datasets/VisDrone/images/train/00000
 
 ### 引用
 
-```bibtex
-@article{ppain2025,
-  title={PPAIN: Privacy-Preserving Adaptive Inpainting Network for Content-Level Protection in Aerial Imagery},
-  author={PPAIN Authors},
-  journal={Engineering Applications of Artificial Intelligence},
-  year={2025}
-}
-```
+如果这个项目对您的研究有帮助，请引用我们的论文：
+
+> **[待发表]** PPAIN: Privacy-Preserving Adaptive Inpainting Network for Content-Level Protection in Aerial Imagery. *Engineering Applications of Artificial Intelligence*.
 
 ### 许可证
 
